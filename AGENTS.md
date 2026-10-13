@@ -52,7 +52,7 @@ libraries, interaction patterns), and reference it explicitly in plan docs under
 ## Running/debugging workflow
 
 - After making app code changes, always build and run the latest app so the user can immediately inspect the result.
-- During implementation, run focused unit/integration/process tests first through `scripts/test-unit.sh`; this script uses the `PiNativeUnitTests` scheme and excludes `PiNativeUITests`. Do not invoke the full `PiNative` test scheme, `scripts/test-ui.sh`, or any PiNative XCUITests/UI automation while iterating on code, specs, 2119 judgments, or review fixes.
+- During implementation, run focused unit/integration/process tests first through `scripts/test-unit.sh`; this script uses the `PiNativeUnitTests` scheme and excludes `PiNativeUITests`. Do not invoke the full `PiNative` test scheme, `scripts/test-ui.sh`, or any PiNative XCUITests/UI automation while iterating on code or review fixes.
 - PiNative unit/integration test commands should use `scripts/test-unit.sh`, which enforces a 60-second overall suite timeout plus a 30-second per-test timeout and streams each test start/pass/fail plus a slowest-first summary. No suite invocation should run longer than 60 seconds and no individual unit test should take longer than 30 seconds. If a unit test times out or hangs, stop that run, identify the suspect test from the script output/log, investigate and fix the hang, then rerun the focused test without waiting for user intervention. The outer command timeout should remain 60 seconds unless the user explicitly authorizes a longer run.
 - Never run UI automation or any test that controls the user's app/desktop without the user's explicit confirmation immediately before the run. When confirmed, run it only at the final pre-push stage and only after focused/unit/integration tests pass, the app has been built and launched, and the user has completed any required manual UI/live-Pi verification. For pre-push agent automation, use `scripts/test-ui-related.sh` so the UI test bundle compiles and only UI tests related to changed app files execute; do not run the full `scripts/test-ui.sh` or full deterministic UI suite unless the user explicitly asks. The user may run the full UI suite manually outside the agent workflow.
 - If the app was launched from Xcode and Xcode is paused on `SIGTERM` / `mach_msg2_trap` / `NSViewBridgeErrorCanceled`, normal `open` or `pkill` may keep hitting the stale suspended debug process. First stop the run from Xcode (`⌘.`) or quit Xcode if it is wedged; then relaunch the fresh DerivedData build. If verifying from the agent while Xcode is wedged, identify the fresh direct-run window by `CGWindowNumber` rather than assuming the first PiNative window is current.
@@ -85,47 +85,3 @@ for the current example of this in practice.
 This project is MIT-licensed (see `LICENSE`, copyright Unsupervised, Inc.). Bundled
 third-party assets (e.g. Maple Font) keep their own licenses — see
 `docs/THIRD_PARTY_LICENSES.md` before assuming an asset can be relicensed as MIT.
-
-<!-- 2119:begin -->
-## Requirements workflow (2119)
-
-This repository enforces spec-driven testing with [2119](https://www.rfc-editor.org/rfc/rfc2119).
-When a fix exists on GitHub before it is published to npm, run the GitHub checkout directly because the GitHub package is not currently npx-runnable:
-`tmp=$(mktemp -d); git clone --depth 1 https://github.com/Unsupervisedcom/2119.git "$tmp/2119" && (cd "$tmp/2119" && npm install --silent && npm run build --silent) && node "$tmp/2119/dist/cli.js" <command>; rc=$?; rm -rf "$tmp"; exit $rc`.
-
-**When planning a feature**, write or update a spec in `specs/` first. Every
-requirement is a numbered item under a `### REQ-NNN.M` heading with exactly one
-RFC 2119 keyword, stating an observable outcome — not an implementation
-mechanism. Every requirement must map to a plausible user action, product lifecycle, or runtime failure that can actually occur; do not specify and test every theoretically possible state merely because it can be imagined. Scope requirements in proportion to likelihood and impact, and leave unreachable, purely hypothetical, or negligible-risk edge cases out unless concrete product behavior makes them relevant. For small UX/product features, keep the requirement set deliberately coarse: prefer a handful of broad, observable requirements that match user-visible behavior over many narrowly sliced micro-requirements. Split a requirement only when the obligations are independently high-risk, independently observable, or require materially different test evidence; do not create separate requirements just because implementation has separate steps. Run `npx rfc2119 lint` after editing specs, or the GitHub checkout command above with `lint` when npm is behind. **Before writing tests
-against a new spec**, dispatch a fresh-context reviewer to critique the draft
-requirements themselves: outcome-stated, individually testable, appropriately coarse, and one obligation
-each. A flawed requirement steers the whole implementation wrong.
-
-**When implementing**, every MUST/SHALL requirement needs at least one test
-annotated with a comment containing its ID, e.g. `// 2119: REQ-001.2.3` (the
-marker line must start with a comment leader). Write tests that would genuinely
-fail if the requirement were violated — including its negative space: what the
-requirement forbids needs a rejection test, not just what it allows. A
-fresh-context reviewer judges each test's honesty; tautological or over-mocked
-tests will be rejected.
-
-**Reviewer diversity**: use reviewer models from different providers, routinely
-or as periodic `npx rfc2119 review --audit` sweeps — adversarial audits of
-passing verdicts. Audit especially the challenging or high-consequence
-requirements; a single model family shares blind spots.
-
-After implementing a feature or fix, run its focused relevant tests to verify the changed behavior. Do not run the full `rfc2119 check` suite merely to finish an individual task.
-
-Pure file moves and test-file refactors that preserve test bodies and requirement
-markers do not require fresh judgment reviews. If a path-only refactor makes verdicts
-stale, report that fact; do not dispatch reviews or broaden the task without user
-approval. Keep requirement-driven tests split into focused files by behavior or
-integration boundary; avoid shared feature test files that carry annotations for an
-entire feature unless the tests are genuinely inseparable.
-
-**Immediately before pushing changes**, run `npx rfc2119 check`, or the GitHub checkout command above with `check` when npm is behind. It must exit 0 before the push. Also run the check when the user explicitly requests it or when requirement semantics or test behavior change. If it
-reports pending judgment reviews, run `npx rfc2119 review --dispatch`, or the GitHub checkout command above with `review --dispatch`, and
-dispatch each instruction file in `.2119/reviews/` to a fresh-context subagent
-(never review your own work in the same context). CI runs the same check, so
-treat it as a required pre-push gate rather than running it after every task or local change.
-<!-- 2119:end -->
