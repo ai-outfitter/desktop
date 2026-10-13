@@ -28,6 +28,9 @@ struct FileModelFavoritesStorage: ModelFavoritesStorage {
     let fileURL: URL
 
     static func defaultLocation(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let state = environment["OUTFITTER_DESKTOP_STATE_DIRECTORY"], !state.isEmpty {
+            return URL(fileURLWithPath: state).appendingPathComponent("model-favorites.json")
+        }
         if let override = environment["PI_NATIVE_TEST_MODEL_FAVORITES_FILE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
@@ -183,6 +186,10 @@ final class ModelSettingsModel: ObservableObject {
 
     func refreshCatalog(loadModels: @escaping () async throws -> [PiModelOption]) async {
         await refreshCatalog(loadModels: loadModels, isProvisional: false)
+    }
+
+    func finishPendingCatalogRefresh() async {
+        await catalogRefreshTask?.value
     }
 
     private func refreshCatalog(

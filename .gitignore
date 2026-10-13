@@ -18,6 +18,9 @@ Config/Signing.xcconfig
 
 # Private exploratory notes and generated plans; never publish.
 research/
+
+# Internal desktop runtime state (including credentials).
+.local/
 # 2119:gitignore-begin
 # Review packets are scratch; verdicts are committed audit history.
 !.2119/

@@ -152,6 +152,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var isCheckingPiHealth = false
     @Published var isSettingsPresented = false
     @Published var settingsSection: SettingsSection = .general
+    @Published private(set) var isSigningInToOutfitter = false
+    @Published private(set) var outfitterSignInStatus: String?
+    @Published private(set) var isConnectedToOutfitter = false
+    private var outfitterLoginProcess: Process?
+    private var pendingOutfitterPrompt: (prompt: PreparedPrompt, projectID: Project.ID?)?
+    private let outfitterRuntimeConfigured: Bool?
+    var canSignInToOutfitter: Bool { outfitterRuntimeConfigured ?? (ProcessInfo.processInfo.environment["OUTFITTER_DESKTOP_CLI"] != nil) }
     let modelSettings: ModelSettingsModel
     private let analytics: any AnalyticsControlling
     @Published var analyticsEnabled: Bool {
@@ -265,11 +272,13 @@ final class AppModel: ObservableObject {
         modelCatalogLoader: (() async throws -> [PiModelOption])? = nil,
         chatTitleGenerator: (any ChatTitleGenerating)? = nil,
         analytics: any AnalyticsControlling = AppAnalytics.shared,
+        outfitterRuntimeConfigured: Bool? = nil,
         piHealthCheck: (() async -> PiHealthCheckResult)? = nil,
         piTerminalRecovery: ((PiCommand?) async throws -> Void)? = nil,
         conversationModelFactory: ((ModelSettingsModel) -> PiConversationModel)? = nil
     ) {
         self.analytics = analytics
+        self.outfitterRuntimeConfigured = outfitterRuntimeConfigured
         self.analyticsEnabled = analytics.isEnabled
         self.piHealthCheckOperation = piHealthCheck ?? { await PiHealthChecker.check() }
         self.piTerminalRecoveryOperation = piTerminalRecovery ?? { command in
@@ -630,6 +639,12 @@ final class AppModel: ObservableObject {
 
     func sendNewChatPrompt(_ prompt: PreparedPrompt) {
         guard !prompt.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if canSignInToOutfitter && modelSettings.preferredConversationModel == nil {
+            pendingOutfitterPrompt = (prompt, selectedProjectID)
+            outfitterSignInStatus = "Connect Outfitter to send your message. Your message is waiting here."
+            presentModelSettings()
+            return
+        }
         if selectedProjectID == nil {
             addStandaloneSession(initialPrompt: prompt)
         } else {
@@ -703,6 +718,76 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Pi health and recovery
+
+    func signInToOutfitter(command: PiCommand? = nil) {
+        guard !isSigningInToOutfitter else { return }
+        guard let invocation = command ?? (canSignInToOutfitter ? PiRPCClient.resolvedPiCommand() : nil) else {
+            outfitterSignInStatus = "The configured Outfitter CLI is unavailable."
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: invocation.executable)
+        process.arguments = ["login"]
+        var environment = ProcessInfo.processInfo.environment
+        if let path = invocation.environmentPath { environment["PATH"] = path }
+        process.environment = environment
+        process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+        // The CLI opens the browser and owns credentials. Never collect or persist
+        // its output in the native app's transcript or diagnostics.
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] finished in
+            Task { @MainActor [weak self] in
+                guard let self, self.outfitterLoginProcess === finished else { return }
+                self.outfitterLoginProcess = nil
+                self.isSigningInToOutfitter = false
+                if finished.terminationStatus == 0 {
+                    self.isConnectedToOutfitter = true
+                    self.outfitterSignInStatus = "Signed in. Choose an Outfitter model in a new chat."
+                    await self.checkPiHealth()
+                    await self.modelSettings.finishPendingCatalogRefresh()
+                    await self.refreshModelCatalog(force: true)
+                    self.refreshIdleRuntimesAfterOutfitterSignIn()
+                    if self.modelSettings.preferredConversationModel == nil,
+                       let spark = self.modelSettings.catalog.first(where: { $0.provider == "outfitter" }) {
+                        self.modelSettings.setFavorite(true, for: spark)
+                    }
+                    if let retained = self.pendingOutfitterPrompt, self.modelSettings.preferredConversationModel != nil {
+                        if retained.projectID == nil || self.projects.contains(where: { $0.id == retained.projectID }) {
+                            self.pendingOutfitterPrompt = nil
+                            self.selectedProjectID = retained.projectID
+                            self.selectedSessionID = nil
+                            self.isSettingsPresented = false
+                            self.sendNewChatPrompt(retained.prompt)
+                        } else {
+                            self.outfitterSignInStatus = "Signed in. Your message is waiting, but its original project is no longer available."
+                        }
+                    }
+                } else {
+                    self.outfitterSignInStatus = "Sign-in did not complete. Try again and approve access in your browser."
+                }
+            }
+        }
+        outfitterSignInStatus = "Waiting for browser approval…"
+        isSigningInToOutfitter = true
+        outfitterLoginProcess = process
+        do {
+            try process.run()
+        } catch {
+            outfitterLoginProcess = nil
+            isSigningInToOutfitter = false
+            outfitterSignInStatus = "Outfitter sign-in could not start. Check the configured CLI."
+        }
+    }
+
+    func cancelOutfitterSignIn() {
+        let process = outfitterLoginProcess
+        outfitterLoginProcess = nil
+        isSigningInToOutfitter = false
+        outfitterSignInStatus = "Sign-in cancelled."
+        if process?.isRunning == true { process?.terminate() }
+    }
 
     func checkPiHealthIfNeeded() async {
         guard !hasCompletedPiHealthCheck else { return }
@@ -840,6 +925,9 @@ final class AppModel: ObservableObject {
     }
 
     private func hydrateActiveConversationModelFromCatalog() {
+        if modelSettings.catalog.contains(where: { $0.provider == "outfitter" }) {
+            isConnectedToOutfitter = true
+        }
         guard let activeConversationModel else { return }
         if let currentModel = activeConversationModel.currentModel,
            let hydratedModel = modelSettings.catalog.first(where: { $0.stableID == currentModel.stableID }) {
@@ -1203,6 +1291,7 @@ final class AppModel: ObservableObject {
     }
 
     func stopAllRuntimes() {
+        cancelOutfitterSignIn()
         let runtimes = Array(conversationRuntimes.values)
         conversationRuntimes.removeAll()
         conversationRuntimeStates.removeAll()
@@ -1214,6 +1303,19 @@ final class AppModel: ObservableObject {
         }
         activeConversationModel = nil
         activeConversationIsRunning = false
+    }
+
+    private func refreshIdleRuntimesAfterOutfitterSignIn() {
+        // Outfitter projects credentials when a chat process starts. Keep the
+        // conversation and its draft, but discard pre-login process snapshots.
+        var restartActive = false
+        for (key, runtime) in conversationRuntimes {
+            guard !runtime.model.blocksConversationSelection,
+                  !runtime.model.isLoadingSession else { continue }
+            runtime.model.stop()
+            if key == selectedConversationKey { restartActive = true }
+        }
+        if restartActive { startActiveConversationIfNeeded() }
     }
 
     private func cleanupRuntime(for key: ConversationKey) {

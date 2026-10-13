@@ -145,6 +145,8 @@ final class PiConversationModel: ObservableObject {
     /// the wrong transcript.
     private var sessionGeneration = 0
     private var processGeneration = 0
+    private var agentActivityRevision = 0
+    private var awaitingLegacySettlement = false
 
     func configureSession(workingDirectory: String?, sessionPath: String?, initialPrompt: PreparedPrompt? = nil, cachedItems: [TranscriptItem] = [], planningMode: Bool = false) {
         let previousSessionPath = currentSessionPath
@@ -346,6 +348,13 @@ final class PiConversationModel: ObservableObject {
     }
 
 #if DEBUG
+    func selectedRuntimeModelForTesting() async throws -> PiModelOption? {
+        await selectionMutationTask?.value
+        guard let client else { throw PiRPCClient.ClientError.processNotRunning }
+        let state = try await client.getState()
+        return PiModelOption(json: state.data?.objectValue?["model"])
+    }
+
     func stopAndWaitForTesting() async {
         let oldClient = detachClientForStop()
         await oldClient?.stop()
@@ -682,6 +691,15 @@ final class PiConversationModel: ObservableObject {
         } else if currentModel == nil,
                   let preferredModel = modelSettings?.preferredConversationModel {
             self.currentModel = preferredModel
+        }
+        if currentModel == nil, availableModels.isEmpty, pendingPrompt != nil {
+            if draft.isEmpty, let prepared = pendingPrompt?.prepared {
+                draft = prepared.message
+                draftAttachments = prepared.displayAttachments
+            }
+            pendingPrompt = nil
+            onAgentRunAbandoned?()
+            sessionLoadNotice = "Connect Outfitter in Settings → Models before sending a message."
         }
         if let response = try? await client.getAvailableThinkingLevels() {
             guard self.client === client else { return }
@@ -1144,18 +1162,20 @@ final class PiConversationModel: ObservableObject {
         }
         switch type {
         case "agent_start":
+            awaitingLegacySettlement = false
+            agentActivityRevision += 1
             runningStartedAt = Date()
             isRunning = true
         case "agent_end":
             assistantBufferID = nil
             closeCurrentActivityGroup()
+            // Older Pi runtimes emit agent_end but no agent_settled. Confirm
+            // the engine is idle before finishing, since queued steering can
+            // start another turn immediately after agent_end.
+            awaitingLegacySettlement = event["willRetry"]?.boolValue != true
+            if awaitingLegacySettlement { scheduleLegacySettlementCheck() }
         case "agent_settled":
-            isRunning = false
-            activeLocalTurnID = nil
-            isAwaitingInitialPromptUserEvent = false
-            assistantBufferID = nil
-            closeCurrentActivityGroup()
-            onAgentSettled?(items)
+            finishAgentRun()
         case "turn_end":
             assistantBufferID = nil
             closeCurrentActivityGroup()
@@ -1178,14 +1198,54 @@ final class PiConversationModel: ObservableObject {
         case "tool_execution_end":
             handleToolEnd(event)
         case "compaction_start":
+            agentActivityRevision += 1
             items.append(.notice("Compacting session…"))
         case "compaction_end":
             items.append(.notice("Compaction finished."))
+            if awaitingLegacySettlement { scheduleLegacySettlementCheck() }
         case "extension_ui_request":
             handleExtensionUIRequest(event)
         default:
             break
         }
+    }
+
+    private func scheduleLegacySettlementCheck() {
+        if let client {
+                let revision = agentActivityRevision
+                let generation = self.processGeneration
+                Task { @MainActor [weak self] in
+                    for _ in 0..<5 {
+                        guard let self, self.client === client,
+                              self.processGeneration == generation,
+                              self.agentActivityRevision == revision,
+                              self.isRunning else { return }
+                        if let state = try? await client.getState(timeoutSeconds: 2),
+                           self.agentActivityRevision == revision,
+                           self.processGeneration == generation,
+                           self.client === client,
+                           state.data?.objectValue?["isStreaming"]?.boolValue == false,
+                           state.data?.objectValue?["pendingMessageCount"] == .number(0),
+                           state.data?.objectValue?["isCompacting"]?.boolValue != true,
+                           self.steeringSubmissionTask == nil {
+                            self.finishAgentRun()
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                }
+            }
+    }
+
+    private func finishAgentRun() {
+        guard isRunning else { return }
+        awaitingLegacySettlement = false
+        isRunning = false
+        activeLocalTurnID = nil
+        isAwaitingInitialPromptUserEvent = false
+        assistantBufferID = nil
+        closeCurrentActivityGroup()
+        onAgentSettled?(items)
     }
 
     private static func isTurnEvent(_ type: String) -> Bool {

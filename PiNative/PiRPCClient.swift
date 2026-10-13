@@ -70,8 +70,18 @@ actor PiRPCClient {
         "--no-context-files"
     ]
 
-    static func defaultPiCommand(disablesTools: Bool = false) -> PiCommand {
-        let invocation = resolvedPiCommand() ?? PiCommand(executable: "/usr/bin/env", arguments: ["pi"])
+    private static func unresolvedCommand(environment: [String: String]) -> PiCommand {
+        if let configured = environment["OUTFITTER_DESKTOP_CLI"] {
+            return PiCommand(
+                executable: configured.hasPrefix("/") ? configured : "/__invalid_outfitter_desktop_cli__",
+                arguments: ["run", "--harness", "pi", "--"]
+            )
+        }
+        return PiCommand(executable: "/usr/bin/env", arguments: ["pi"])
+    }
+
+    static func defaultPiCommand(disablesTools: Bool = false, environment: [String: String] = ProcessInfo.processInfo.environment) -> PiCommand {
+        let invocation = resolvedPiCommand(environment: environment) ?? unresolvedCommand(environment: environment)
         return rpcCommand(from: invocation, disablesTools: disablesTools)
     }
 
@@ -84,8 +94,7 @@ actor PiRPCClient {
         )
     }
 
-    static func isolatedRPCCommand() -> PiCommand {
-        let environment = ProcessInfo.processInfo.environment
+    static func isolatedRPCCommand(environment: [String: String] = ProcessInfo.processInfo.environment) -> PiCommand {
         if let executable = environment["PI_NATIVE_TEST_TITLE_PI_EXECUTABLE"] {
             let arguments = decodedArguments(environment["PI_NATIVE_TEST_TITLE_PI_ARGUMENTS"])
             return PiCommand(
@@ -94,8 +103,8 @@ actor PiRPCClient {
                 environmentPath: environment["PATH"]
             )
         }
-        let invocation = resolvedPiCommand(usesTestOverride: false)
-            ?? PiCommand(executable: "/usr/bin/env", arguments: ["pi"])
+        let invocation = resolvedPiCommand(usesTestOverride: false, environment: environment)
+            ?? unresolvedCommand(environment: environment)
         return isolatedRPCCommand(from: invocation)
     }
 
@@ -107,8 +116,8 @@ actor PiRPCClient {
         )
     }
 
-    static func defaultModelListCommand() -> PiCommand {
-        let invocation = resolvedPiCommand() ?? PiCommand(executable: "/usr/bin/env", arguments: ["pi"])
+    static func defaultModelListCommand(environment: [String: String] = ProcessInfo.processInfo.environment) -> PiCommand {
+        let invocation = resolvedPiCommand(environment: environment) ?? unresolvedCommand(environment: environment)
         return modelListCommand(from: invocation)
     }
 
@@ -131,6 +140,9 @@ actor PiRPCClient {
                 arguments: decodedArguments(environment["PI_NATIVE_TEST_PI_ARGUMENTS"]),
                 environmentPath: environment["PATH"]
             )
+        }
+        if environment["OUTFITTER_DESKTOP_CLI"] != nil {
+            return PiExecutableResolver(environment: environment).resolve()
         }
         return PiInvocationCache.shared.command(refresh: refresh) {
             PiExecutableResolver(environment: environment).resolve()

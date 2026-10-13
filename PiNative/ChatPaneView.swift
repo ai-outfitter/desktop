@@ -38,6 +38,9 @@ struct ChatPaneView: View {
             await appModel.checkPiHealthIfNeeded()
             appModel.startActiveConversationIfNeeded()
             await appModel.refreshModelCatalog()
+            if appModel.canSignInToOutfitter && appModel.modelSettings.preferredConversationModel == nil {
+                appModel.presentModelSettings()
+            }
         }
     }
 
