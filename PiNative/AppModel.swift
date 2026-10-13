@@ -158,7 +158,7 @@ final class AppModel: ObservableObject {
     private var outfitterLoginProcess: Process?
     private var pendingOutfitterPrompt: (prompt: PreparedPrompt, projectID: Project.ID?)?
     private let outfitterRuntimeConfigured: Bool?
-    var canSignInToOutfitter: Bool { outfitterRuntimeConfigured ?? (ProcessInfo.processInfo.environment["OUTFITTER_DESKTOP_CLI"] != nil) }
+    var canSignInToOutfitter: Bool { outfitterRuntimeConfigured ?? PiExecutableResolver.hasResolvableOutfitterCLI() }
     let modelSettings: ModelSettingsModel
     private let analytics: any AnalyticsControlling
     @Published var analyticsEnabled: Bool {

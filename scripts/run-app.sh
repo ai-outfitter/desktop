@@ -11,10 +11,11 @@ BUILD_LOG_FILE="/tmp/pinative-run-app-build.log"
 CLEAN=0
 RUN_TESTS=0
 LAUNCH=1
+SIDECAR=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run-app.sh [--clean] [--test] [--no-launch]
+Usage: scripts/run-app.sh [--clean] [--test] [--sidecar] [--no-launch]
 
 Builds PiNative into a repo-local DerivedData directory, then relaunches the
 latest Debug app. The relaunch is detached so it still completes if invoked
@@ -23,6 +24,12 @@ from a PiNative-hosted Pi session.
 Options:
   --clean      Remove the run-app DerivedData directory before building.
   --test       Run the unit-only PiNative test action before launching; UI tests are excluded.
+  --sidecar    Launch a second, isolated PiNative instance alongside the
+               running app instead of restarting it. Never kills any running
+               PiNative, so it is safe to run from a Pi session hosted by
+               PiNative. Uses its own state directory
+               (.local/outfitter-home-sidecar) and reuses the host's bundled
+               Outfitter CLI.
   --no-launch  Build only; do not restart/open the app.
   -h, --help   Show this help.
 EOF
@@ -32,6 +39,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --clean) CLEAN=1 ;;
     --test) RUN_TESTS=1 ;;
+    --sidecar) SIDECAR=1 ;;
     --no-launch) LAUNCH=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -76,6 +84,25 @@ fi
 
 if [[ $LAUNCH -eq 0 ]]; then
   echo "Built: $APP_PATH"
+  exit 0
+fi
+
+if [[ $SIDECAR -eq 1 ]]; then
+  # Agent-safe launch: open a second, isolated instance and leave every
+  # running PiNative (including the one hosting this Pi session) untouched.
+  # The app resolves the bundled/installed Outfitter CLI itself, so the sidecar
+  # only overrides the one thing it needs: an isolated state directory.
+  sidecar_state="${OUTFITTER_SIDECAR_STATE_DIRECTORY:-$PROJECT_ROOT/.local/outfitter-home-sidecar}"
+  if command -v node >/dev/null 2>&1; then
+    OUTFITTER_DESKTOP_STATE_DIRECTORY="$sidecar_state" \
+      node "$PROJECT_ROOT/scripts/configure-outfitter-state.mjs"
+  fi
+  /usr/bin/open -n \
+    --env "OUTFITTER_DESKTOP_STATE_DIRECTORY=$sidecar_state" \
+    "$APP_PATH" --args -ApplePersistenceIgnoreState YES
+  echo "Sidecar instance opened: $APP_PATH"
+  echo "Sidecar state directory: $sidecar_state"
+  echo "No running PiNative was restarted."
   exit 0
 fi
 

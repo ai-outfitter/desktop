@@ -124,6 +124,26 @@ final class PiStartupHealthTests: XCTestCase {
         XCTAssertEqual(response.success, true)
     }
 
+    func testInstalledOutfitterCLIResolvesWithoutEnvironmentAndBeatsPATHPi() throws {
+        let root = try temporaryDirectory(named: "PiNativeManagedOutfitter")
+        defer { try? FileManager.default.removeItem(at: root) }
+        // A `pi` on PATH must not win: Outfitter is PiNative's only backend and
+        // resolves itself from its managed install without any environment.
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        try makeExecutable(at: bin.appendingPathComponent("pi"), contents: "#!/bin/sh\nexit 0\n")
+        let installed = root.appendingPathComponent("Library/Application Support/PiNative/Outfitter/cli/bin/outfitter")
+        try makeExecutable(at: installed, contents: "#!/bin/sh\nexit 0\n")
+
+        let resolver = PiExecutableResolver(
+            environment: ["PATH": bin.path, "HOME": root.path],
+            homeDirectory: root,
+            loginShellResolution: { nil }
+        )
+        let command = try XCTUnwrap(resolver.resolve())
+        XCTAssertEqual(command.executable, installed.path)
+        XCTAssertEqual(command.arguments, ["run", "desktop", "--harness", "pi", "--"])
+    }
+
     func testPiDependentCommandsPreserveTheResolvedExecutableAndRuntimePath() throws {
         let base = PiCommand(
             executable: "/tmp/custom-pi/bin/pi",
@@ -165,6 +185,11 @@ final class PiStartupHealthTests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "\(bin.path):/usr/bin:/bin"
         environment["SHELL"] = "/usr/bin/false"
+        // Pin HOME to the fixture root so Outfitter CLI self-resolution (which
+        // prefers an installed Application Support copy) does not pick up a real
+        // install on the test machine; this exercises the legacy Pi discovery.
+        environment["HOME"] = root.path
+        environment.removeValue(forKey: "OUTFITTER_DESKTOP_CLI")
         environment.removeValue(forKey: "PI_NATIVE_TEST_PI_EXECUTABLE")
         environment.removeValue(forKey: "PI_NATIVE_RESET_PROJECTS")
         PiInvocationCache.shared.resetForTesting()

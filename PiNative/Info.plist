@@ -29,6 +29,10 @@
     </array>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>PiNative uses the microphone so you can dictate chat messages on this device.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>PiNative performs on-device speech recognition to turn your dictation into text in the chat composer.</string>
     <key>PostHogProjectAPIKey</key>
     <string>$(POSTHOG_PROJECT_API_KEY)</string>
 </dict>

@@ -34,29 +34,39 @@ struct PiExecutableResolver {
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        homeDirectory: URL? = nil,
         fileManager: FileManager = .default,
         loginShellResolution: (() -> PiShellResolution?)? = nil
     ) {
         self.environment = environment
-        self.homeDirectory = homeDirectory
+        let resolvedHome = homeDirectory
+            ?? environment["HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        self.homeDirectory = resolvedHome
         self.fileManager = fileManager
         self.loginShellResolution = loginShellResolution ?? {
-            Self.resolveFromLoginShell(environment: environment, homeDirectory: homeDirectory)
+            Self.resolveFromLoginShell(environment: environment, homeDirectory: resolvedHome)
         }
     }
 
     func resolve() -> PiCommand? {
         let inheritedPath = Self.normalizedPath(environment["PATH"])
-        if let outfitter = environment["OUTFITTER_DESKTOP_CLI"] {
-            // An explicit runtime is authoritative; never mask a broken install
-            // by falling back to another provider or credential store.
-            guard isExecutable(outfitter) else { return nil }
-            let agent = environment["OUTFITTER_DESKTOP_AGENT"].flatMap { $0.isEmpty ? nil : $0 }
+        // Outfitter is PiNative's only backend and is shipped with / installed
+        // alongside the app, so it resolves itself without a launch environment.
+        if let outfitter = outfitterCLIPath() {
+            // OUTFITTER_DESKTOP_AGENT is a dev/test override; production uses the
+            // bundled "desktop" agent.
+            let agent = environment["OUTFITTER_DESKTOP_AGENT"].flatMap { $0.isEmpty ? nil : $0 } ?? "desktop"
             var invocation = command(executable: outfitter, path: inheritedPath)
-            invocation.arguments = ["run"] + (agent.map { [$0] } ?? []) + ["--harness", "pi", "--"]
+            invocation.arguments = ["run", agent, "--harness", "pi", "--"]
             return invocation
         }
+        if environment["OUTFITTER_DESKTOP_CLI"] != nil {
+            // A broken explicit dev override is authoritative; never mask it by
+            // falling back to another provider or credential store.
+            return nil
+        }
+        // Legacy Pi discovery, reachable only if no Outfitter CLI is installed.
         if let executable = executableNamedPi(on: inheritedPath) {
             return command(executable: executable, path: inheritedPath)
         }
@@ -79,6 +89,49 @@ struct PiExecutableResolver {
         }
 
         return nil
+    }
+
+    /// Resolves the Outfitter CLI without requiring a launch environment: an
+    /// explicit `OUTFITTER_DESKTOP_CLI` override wins (the one retained dev/CI
+    /// knob; a broken path is authoritative, not masked), then the copy bundled
+    /// inside the app, then the installed Application Support copy.
+    func outfitterCLIPath() -> String? {
+        if let explicit = environment["OUTFITTER_DESKTOP_CLI"] {
+            return isExecutable(explicit) ? explicit : nil
+        }
+        for candidate in Self.managedCLICandidates(homeDirectory: homeDirectory) where isExecutable(candidate) {
+            return candidate
+        }
+        return nil
+    }
+
+    /// Whether PiNative can resolve an Outfitter CLI without launching anything.
+    /// Gates the sign-in affordances now that Outfitter is the only backend.
+    static func hasResolvableOutfitterCLI(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        PiExecutableResolver(environment: environment).outfitterCLIPath() != nil
+    }
+
+    /// Managed Outfitter CLI locations, highest priority first: the copy bundled
+    /// inside the app, then the installed Application Support copy.
+    private static func managedCLICandidates(homeDirectory: URL) -> [String] {
+        var candidates: [String] = []
+        if let resource = Bundle.main.resourceURL {
+            candidates.append(resource.appendingPathComponent("Outfitter/cli/bin/outfitter").path)
+        }
+        candidates.append(installedCLIPath(homeDirectory: homeDirectory))
+        return candidates
+    }
+
+    static func installedCLIPath(homeDirectory: URL) -> String {
+        homeDirectory.appendingPathComponent("Library/Application Support/PiNative/Outfitter/cli/bin/outfitter").path
+    }
+
+    /// The Outfitter Desktop state directory (sign-in, settings) under
+    /// Application Support, used when no explicit state directory is set.
+    static func managedStateDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        let home = environment["HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent("Library/Application Support/PiNative/Outfitter/state").path
     }
 
     private func executableNamedPi(on path: String) -> String? {

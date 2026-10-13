@@ -584,6 +584,7 @@ struct AttachmentComposerShell<AccessoryContent: View>: View {
     @State private var attachmentError: AttachmentImportError?
     @State private var historyNavigator = ComposerPromptHistoryNavigator()
     @State private var historyTextUpdateRequest = UUID()
+    @StateObject private var dictation = VoiceDictationController()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -598,6 +599,12 @@ struct AttachmentComposerShell<AccessoryContent: View>: View {
                     .foregroundStyle(.orange)
             }
 
+            if let dictationStatus = dictation.statusMessage {
+                Text(dictationStatus)
+                    .font(ChatTypography.caption())
+                    .foregroundStyle(.orange)
+            }
+
             PasteAwareTextView(
                 text: $draft,
                 placeholder: placeholder,
@@ -606,14 +613,17 @@ struct AttachmentComposerShell<AccessoryContent: View>: View {
                 focusRequest: focusRequest,
                 textIdentity: textIdentity,
                 textUpdateRequest: historyTextUpdateRequest,
-                onSubmit: {
-                    historyNavigator.endBrowsing()
-                    onSubmit()
-                },
+                onSubmit: submit,
                 onEscape: onEscape,
                 onHistoryOlder: navigateToOlderPrompt,
                 onHistoryNewer: navigateToNewerPrompt,
-                onUserEdit: { historyNavigator.userDidEdit() },
+                onUserEdit: {
+                    // A manual edit means the user is taking over from
+                    // dictation; stop it so live results no longer overwrite
+                    // what they just typed.
+                    if dictation.isActive { dictation.cancel() }
+                    historyNavigator.userDidEdit()
+                },
                 onPasteAttachments: handleImportedAttachments,
                 onDragTargeted: { isDropTargeted = $0 }
             )
@@ -637,13 +647,16 @@ struct AttachmentComposerShell<AccessoryContent: View>: View {
 
                 accessoryContent()
 
+                ComposerDictationButton(
+                    state: dictation.state,
+                    isEnabled: interactionEnabled,
+                    onToggle: toggleDictation
+                )
+
                 ComposerSendButton(
                     isRunning: isRunning,
                     isDisabled: sendDisabled,
-                    onSubmit: {
-                        historyNavigator.endBrowsing()
-                        onSubmit()
-                    },
+                    onSubmit: submit,
                     onStop: onStop
                 )
             }
@@ -658,7 +671,19 @@ struct AttachmentComposerShell<AccessoryContent: View>: View {
         }
         .shadow(color: Color.black.opacity(0.08), radius: 14, x: 0, y: 8)
         .onChange(of: textIdentity) { _, _ in
+            dictation.cancel()
             historyNavigator.chatDidChange()
+        }
+        .onChange(of: interactionEnabled) { _, isEnabled in
+            // The dictation button is disabled along with the composer, so a
+            // recording in flight when interaction stops would otherwise keep
+            // the mic live with no way to stop it from the UI.
+            if !isEnabled { dictation.cancel() }
+        }
+        .onChange(of: dictation.liveDraft) { _, liveDraft in
+            guard let liveDraft else { return }
+            draft = liveDraft
+            historyTextUpdateRequest = UUID()
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             guard interactionEnabled else { return false }
@@ -725,6 +750,22 @@ struct AttachmentComposerShell<AccessoryContent: View>: View {
         )
         if didNavigate { historyTextUpdateRequest = UUID() }
         return didNavigate
+    }
+
+    private func submit() {
+        dictation.cancel()
+        historyNavigator.endBrowsing()
+        onSubmit()
+    }
+
+    private func toggleDictation() {
+        guard interactionEnabled else { return }
+        if dictation.isActive {
+            dictation.stop()
+        } else {
+            historyNavigator.endBrowsing()
+            dictation.start(baseDraft: draft)
+        }
     }
 }
 
@@ -808,6 +849,67 @@ struct ComposerPromptHistoryNavigator {
     ) {
         draft = payload.text
         attachments = payload.attachments
+    }
+}
+
+private struct ComposerDictationButton: View {
+    let state: VoiceDictationState
+    let isEnabled: Bool
+    let onToggle: () -> Void
+
+    @State private var isPulsing = false
+
+    private var isRecording: Bool { state == .recording }
+
+    private var iconColor: Color {
+        if isRecording { return AppTheme.stopAccent }
+        if !isEnabled || state == .starting { return .secondary.opacity(0.5) }
+        return .secondary
+    }
+
+    private var accessibilityValueText: String {
+        switch state {
+        case .idle: "Not recording"
+        case .starting: "Preparing"
+        case .recording: "Recording"
+        }
+    }
+
+    var body: some View {
+        Button(action: onToggle) {
+            Image(systemName: "mic.fill")
+                .font(ChatTypography.callout())
+                .foregroundStyle(iconColor)
+                .frame(width: 24, height: 24)
+                .opacity(isPulsing ? 0.45 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(isRecording ? "Stop dictation" : "Start dictation")
+        .accessibilityValue(accessibilityValueText)
+        .accessibilityIdentifier("composer.dictationButton")
+        .help(isRecording ? "Stop dictation" : "Dictate")
+        .onAppear {
+            updatePulse(for: state)
+        }
+        .onChange(of: state) { _, newState in
+            updatePulse(for: newState)
+        }
+    }
+
+    private func updatePulse(for state: VoiceDictationState) {
+        if state == .recording {
+            guard !isPulsing else { return }
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                isPulsing = true
+            }
+        } else if isPulsing {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                isPulsing = false
+            }
+        }
     }
 }
 

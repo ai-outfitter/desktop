@@ -34,6 +34,37 @@ PiNative now uses the organization-owned bundle identifier
 as a different app, so local permission grants and bundle-scoped preferences do
 not migrate automatically.
 
+## Developing while PiNative hosts your agent
+
+Pi sessions are child processes of a running PiNative. Restarting PiNative from
+inside a Pi session — including `scripts/run-app.sh` in its default relaunch
+mode, `scripts/run-outfitter-app.sh` (which kills its own app path), or any
+`pkill`/`killall` of PiNative — kills the agent's own host.
+
+When working on PiNative features from a Pi session:
+
+```
+# Focused verification (does not touch the running app)
+scripts/test-unit.sh -only-testing:PiNativeTests/VoiceDictationTests
+
+# Build for inspection without touching the running app
+scripts/run-app.sh --no-launch
+
+# Or launch an isolated second instance alongside the running app
+scripts/run-app.sh --sidecar
+```
+
+`--sidecar` builds the same Debug app and opens it with `open -n` — it never
+kills or restarts anything. The sidecar runs with its own state directory
+(`.local/outfitter-home-sidecar`, override with `OUTFITTER_SIDECAR_STATE_DIRECTORY`)
+so its chats and settings stay separate from the running app's, and with
+`-ApplePersistenceIgnoreState YES` so two instances do not fight over saved
+window state. It reuses the host's bundled Outfitter CLI (override with
+`OUTFITTER_DESKTOP_CLI`).
+
+Restarting the app a person is actively using is a human decision; leave it to
+the user.
+
 ## Building an internal unsigned DMG
 
 For coworker testing, build a clearly labeled internal unsigned DMG:

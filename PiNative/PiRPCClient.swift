@@ -62,8 +62,15 @@ actor PiRPCClient {
 
     static func runtimeEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var result = environment
-        if environment["OUTFITTER_DESKTOP_CLI"] != nil,
-           let state = environment["OUTFITTER_DESKTOP_STATE_DIRECTORY"], !state.isEmpty {
+        // Outfitter Desktop's signed-in state lives under Application Support.
+        // The CLI locates its state via OUTFITTER_USER_HOME and has no flag for
+        // it, so the app sets this single derived variable on the child it
+        // spawns — pointing at the managed state directory by default so a
+        // plainly launched app still finds the signed-in runtime. An explicit
+        // OUTFITTER_USER_HOME (or dev state directory) is always preserved.
+        if result["OUTFITTER_USER_HOME"]?.isEmpty ?? true {
+            let state = environment["OUTFITTER_DESKTOP_STATE_DIRECTORY"].flatMap { $0.isEmpty ? nil : $0 }
+                ?? PiExecutableResolver.managedStateDirectory(environment: environment)
             result["OUTFITTER_USER_HOME"] = state
         }
         return result
