@@ -382,7 +382,8 @@ enum PiTerminalRecovery {
         if let command {
             let arguments = ([command.executable] + command.arguments).map(shellQuote).joined(separator: " ")
             let exportPath = command.environmentPath.map { "export PATH=\(shellQuote($0))\n" } ?? ""
-            launch = "\(exportPath)exec \(arguments)"
+            let exportHome = PiRPCClient.runtimeEnvironment()["OUTFITTER_USER_HOME"].map { "export OUTFITTER_USER_HOME=\(shellQuote($0))\n" } ?? ""
+            launch = "\(exportPath)\(exportHome)exec \(arguments)"
         } else {
             launch = "exec \(shellQuote(shell)) -l -i -c \(shellQuote("pi"))"
         }

@@ -34,34 +34,7 @@ final class OutfitterRuntimeTests: XCTestCase {
 
     @MainActor
     func testLiveOutfitterFirstMessageCompletesThroughConversationModel() async throws {
-        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        guard FileManager.default.fileExists(atPath: repo.appendingPathComponent(".local/live-test-enabled").path) else {
-            throw XCTSkip("Enable explicitly with a disposable authenticated Outfitter session.")
-        }
-        let spark = PiModelOption(provider: "outfitter", id: "GLM-5.3-Flash-EXL3", name: "Spark")
-        let settings = ModelSettingsModel(storage: isolatedOutfitterFavorites(), configuredDefaultModel: spark)
-        settings.updateCatalog([spark])
-        settings.setFavorite(true, for: spark)
-        let clientCommand = PiRPCClient.rpcCommand(from: PiCommand(
-            executable: repo.appendingPathComponent("scripts/outfitter-local").path,
-            arguments: ["run", "desktop", "--harness", "pi", "--"]
-        ))
-        let conversation = PiConversationModel(piCommand: clientCommand, modelSettings: settings)
-        conversation.start(workingDirectory: repo.path, sessionPath: nil,
-            initialPrompt: PreparedPrompt(message: "Reply only with Spark connected. Do not use tools.", images: [], displayAttachments: []))
-        let deadline = Date().addingTimeInterval(25)
-        var replied = false
-        while Date() < deadline {
-            replied = conversation.items.contains { if case .assistantText(_, let text) = $0 { return !text.isEmpty }; return false }
-            if replied && !conversation.isRunning { break }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        let failed = conversation.errorMessage
-        let settled = replied && !conversation.isRunning
-        await conversation.stopAndWaitForTesting()
-        XCTAssertTrue(settled, "Spark turn did not finish; the loading indicator would remain visible")
-        XCTAssertNil(failed)
-        XCTAssertTrue(replied, "Real native conversation did not produce a Spark response: \(failed ?? conversation.sessionLoadNotice ?? "no reported failure")")
+        try await assertLiveExistingConversation(modelID: "GLM-5.3-Flash-EXL3")
     }
 
     @MainActor
@@ -112,12 +85,14 @@ final class OutfitterRuntimeTests: XCTestCase {
         umask 077
         export OUTFITTER_DESKTOP_STATE_DIRECTORY='\(state.path)'
         export OUTFITTER_DESKTOP_ORIGIN=http://localhost:4482
+        export OUTFITTER_USER_HOME='\(state.path)'
+        /opt/homebrew/bin/node '\(repo.path)/scripts/configure-outfitter-state.mjs'
         if [ "$1" = login ]; then
           cp '\(fixtureAuth.path)' '\(authDirectory.path)/auth.json'
           exit 0
         fi
         echo run >> '\(starts.path)'
-        exec '\(repo.path)/scripts/outfitter-local' "$@"
+        exec '\(ProcessInfo.processInfo.environment["OUTFITTER_LIVE_CLI"] ?? repo.appendingPathComponent(".local/cli/bin/outfitter").path)' "$@"
         """)
         let spark = PiModelOption(provider: "outfitter", id: modelID, name: modelID)
         let restore = withOutfitterEnvironment(executable.path)
@@ -180,7 +155,9 @@ final class OutfitterRuntimeTests: XCTestCase {
         app.signInToOutfitter(command: PiCommand(executable: executable.path, arguments: []))
         while app.isSigningInToOutfitter && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         // Catalog refresh and runtime adoption finish after the process callback.
-        while (try? String(contentsOf: starts, encoding: .utf8).split(separator: "\n").count) ?? 0 < 2 && Date() < deadline {
+        while Date() < deadline {
+            let processCount = (try? String(contentsOf: starts, encoding: .utf8).split(separator: "\n").count) ?? 0
+            if processCount >= 3 && app.modelSettings.catalog.contains(where: { $0.stableID == spark.stableID }) && conversation.isProcessStarted && !conversation.isLoadingSession { break }
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertTrue(app.modelSettings.catalog.contains { $0.stableID == spark.stableID }, "Real catalog producer must deliver the requested canonical model after credential approval")
@@ -194,7 +171,11 @@ final class OutfitterRuntimeTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         conversation.selectModel(spark)
-        let selected = try await conversation.selectedRuntimeModelForTesting()
+        var selected = try await conversation.selectedRuntimeModelForTesting()
+        while selected?.stableID != spark.stableID && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            selected = try await conversation.selectedRuntimeModelForTesting()
+        }
         XCTAssertEqual(selected?.stableID, spark.stableID)
         guard selected?.stableID == spark.stableID else {
             await conversation.stopAndWaitForTesting()
@@ -638,7 +619,7 @@ final class OutfitterRuntimeTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: repo.appendingPathComponent(".local/live-browser-login-enabled").path) else {
             throw XCTSkip("Manual opt-in only: requires immediate permission to open browser and approve a disposable device session.")
         }
-        let restore = withOutfitterEnvironment(repo.appendingPathComponent("scripts/outfitter-local").path)
+        let restore = withOutfitterEnvironment(ProcessInfo.processInfo.environment["OUTFITTER_LIVE_CLI"] ?? repo.appendingPathComponent(".local/cli/bin/outfitter").path)
         defer { restore() }
         setenv("OUTFITTER_DESKTOP_AGENT", "desktop", 1)
         let app = AppModel(modelFavoritesStorage: isolatedOutfitterFavorites())
@@ -673,6 +654,36 @@ final class OutfitterRuntimeTests: XCTestCase {
             try await waitUntil { !conversation.isRunning }
             await conversation.stopAndWaitForTesting()
         }
+    }
+
+    @MainActor
+    func testInstalledCLISharesDesktopHomeAcrossRPCLoginAndRecovery() async throws {
+        let fixture = try ConfiguredOutfitterFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let restore = withOutfitterEnvironment(fixture.executable.path)
+        defer { restore() }
+        let previous = getenv("OUTFITTER_DESKTOP_STATE_DIRECTORY").map { String(cString: $0) }
+        setenv("OUTFITTER_DESKTOP_STATE_DIRECTORY", fixture.root.path, 1)
+        defer {
+            if let previous { setenv("OUTFITTER_DESKTOP_STATE_DIRECTORY", previous, 1) }
+            else { unsetenv("OUTFITTER_DESKTOP_STATE_DIRECTORY") }
+        }
+        let client = PiRPCClient(workingDirectory: fixture.root)
+        try await client.start()
+        _ = try await client.getState()
+        await client.stop()
+        let app = AppModel(modelFavoritesStorage: isolatedOutfitterFavorites())
+        defer { app.stopAllRuntimes() }
+        app.signInToOutfitter()
+        try await waitUntil { !app.isSigningInToOutfitter }
+        XCTAssertTrue(app.isConnectedToOutfitter)
+        let records = try fixture.records().filter { $0["argv"] != nil }
+        XCTAssertTrue(records.contains { $0["argv"] as? [String] == ["login"] })
+        XCTAssertTrue(records.allSatisfy { $0["home"] as? String == fixture.root.path })
+        let command = try XCTUnwrap(PiRPCClient.resolvedPiCommand())
+        let recovery = PiTerminalRecovery.script(command: command, homeDirectory: fixture.root, shell: "/bin/sh")
+        XCTAssertTrue(recovery.contains("export OUTFITTER_USER_HOME='\(fixture.root.path)'"))
+        XCTAssertEqual(PiRPCClient.runtimeEnvironment(["OUTFITTER_DESKTOP_STATE_DIRECTORY": "ignored", "OUTFITTER_USER_HOME": "existing"])["OUTFITTER_USER_HOME"], "existing")
     }
 
     @MainActor
@@ -799,7 +810,7 @@ private struct ConfiguredOutfitterFixture {
         session=\(sessionPath)
         def log(value):
             with open(calls,'a') as f: f.write(json.dumps(value)+'\\n')
-        log({'argv':sys.argv[1:]})
+        log({'argv':sys.argv[1:],'home':os.environ.get('OUTFITTER_USER_HOME')})
         if sys.argv[1:]==['login']:
             print('LOGIN_READY',flush=True)
             sys.exit(0)
