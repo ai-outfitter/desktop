@@ -14,7 +14,7 @@ if [[ -z "$cli" || ! -x "$cli" ]]; then
   exit 1
 fi
 cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
-node "$root/scripts/configure-outfitter-state.mjs"
+node "$root/scripts/configure-outfitter-state.mjs" "$("$cli" --version)"
 if [[ "${1:-}" != "--no-build" ]]; then
   xcodebuild -project "$root/PiNative.xcodeproj" -scheme PiNative \
     -configuration Debug -destination 'platform=macOS' -derivedDataPath "$derived" \

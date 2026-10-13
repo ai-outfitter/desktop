@@ -1,12 +1,12 @@
 # Outfitter desktop runtime
 
-PiNative uses an installed `@ai-outfitter/outfitter` CLI. It does not import a
+PiNative uses an installed `@ai-outfitter/outfitter` CLI, version 1.18.0 or newer. It does not import a
 neighboring source checkout or require a development command wrapper.
 
 Install the release into an application-owned prefix:
 
 ```sh
-npm install -g --prefix .local/cli @ai-outfitter/outfitter
+npm install -g --prefix .local/cli @ai-outfitter/outfitter@1.18.0
 scripts/run-outfitter-app.sh
 ```
 

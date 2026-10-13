@@ -3,6 +3,13 @@
 import { mkdirSync, existsSync, writeFileSync, readFileSync, renameSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+const cliVersion = process.argv[2];
+if (cliVersion !== undefined) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(cliVersion.trim());
+  if (!match || Number(match[1]) < 1 || (Number(match[1]) === 1 && Number(match[2]) < 18)) {
+    throw new Error('PiNative requires @ai-outfitter/outfitter 1.18.0 or newer. Update the installed CLI before launching.');
+  }
+}
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const state = process.env.OUTFITTER_DESKTOP_STATE_DIRECTORY || join(desktop, '.local/outfitter-home');
 const origin = process.env.OUTFITTER_DESKTOP_ORIGIN || 'https://ai-outfitter.com';
