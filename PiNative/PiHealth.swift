@@ -48,6 +48,15 @@ struct PiExecutableResolver {
 
     func resolve() -> PiCommand? {
         let inheritedPath = Self.normalizedPath(environment["PATH"])
+        if let outfitter = environment["OUTFITTER_DESKTOP_CLI"] {
+            // An explicit runtime is authoritative; never mask a broken install
+            // by falling back to another provider or credential store.
+            guard isExecutable(outfitter) else { return nil }
+            let agent = environment["OUTFITTER_DESKTOP_AGENT"].flatMap { $0.isEmpty ? nil : $0 }
+            var invocation = command(executable: outfitter, path: inheritedPath)
+            invocation.arguments = ["run"] + (agent.map { [$0] } ?? []) + ["--harness", "pi", "--"]
+            return invocation
+        }
         if let executable = executableNamedPi(on: inheritedPath) {
             return command(executable: executable, path: inheritedPath)
         }
@@ -307,7 +316,9 @@ enum PiHealthChecker {
         }
         guard let baseCommand else {
             return .needsAttention(PiHealthIssue(
-                message: "Pi could not be found. Install Pi or make it available in your shell.",
+                message: environment["OUTFITTER_DESKTOP_CLI"] != nil
+                    ? "The configured Outfitter CLI could not be found. Set OUTFITTER_DESKTOP_CLI to an executable absolute path."
+                    : "Pi could not be found. Install Pi or make it available in your shell.",
                 command: nil
             ))
         }

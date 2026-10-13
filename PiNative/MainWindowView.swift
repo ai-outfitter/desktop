@@ -223,10 +223,15 @@ private struct PiRecoveryStatusBar: View {
     }
 }
 
-private struct SettingsModalView: View {
+struct SettingsModalView: View {
     @EnvironmentObject private var appModel: AppModel
     @State private var selectedSection: SettingsSection = .general
     let onClose: () -> Void
+
+    init(initialSection: SettingsSection = .general, onClose: @escaping () -> Void) {
+        _selectedSection = State(initialValue: initialSection)
+        self.onClose = onClose
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -284,6 +289,9 @@ private struct SettingsModalView: View {
             case .projects:
                 projectsPane
             case .models:
+                if appModel.canSignInToOutfitter {
+                    OutfitterConnectionControls(appModel: appModel)
+                }
                 ModelSettingsView(model: appModel.modelSettings) { force in
                     Task { await appModel.refreshModelCatalog(force: force) }
                 }
@@ -473,5 +481,35 @@ private struct AppearanceSegmentedPicker: View {
             light: NSColor(calibratedWhite: 1.0, alpha: 0.72),
             dark: NSColor(calibratedWhite: 1.0, alpha: 0.08)
         ), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+struct OutfitterConnectionControls: View {
+    @ObservedObject var appModel: AppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("Outfitter inference").font(.headline)
+                if appModel.isConnectedToOutfitter {
+                    Label("Connected", systemImage: "checkmark.circle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if appModel.isSigningInToOutfitter {
+                    ProgressView().controlSize(.small)
+                    Button("Cancel") { appModel.cancelOutfitterSignIn() }
+                } else {
+                    Button(appModel.isConnectedToOutfitter ? "Switch account…" : "Sign in with Outfitter…") { appModel.signInToOutfitter() }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            Text(appModel.outfitterSignInStatus ?? (appModel.isConnectedToOutfitter ? "Your Outfitter account is connected." : "Connect your account in your browser to use hosted models."))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 30)
+        .padding(.bottom, 24)
     }
 }
