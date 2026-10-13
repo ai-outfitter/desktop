@@ -728,7 +728,7 @@ final class AppModel: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: invocation.executable)
         process.arguments = ["login"]
-        var environment = ProcessInfo.processInfo.environment
+        var environment = PiRPCClient.runtimeEnvironment()
         if let path = invocation.environmentPath { environment["PATH"] = path }
         process.environment = environment
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser

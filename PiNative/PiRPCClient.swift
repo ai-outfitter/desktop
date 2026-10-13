@@ -60,6 +60,15 @@ actor PiRPCClient {
         self.usesIsolatedCommand = usesIsolatedCommand
     }
 
+    static func runtimeEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var result = environment
+        if environment["OUTFITTER_DESKTOP_CLI"] != nil,
+           let state = environment["OUTFITTER_DESKTOP_STATE_DIRECTORY"], !state.isEmpty {
+            result["OUTFITTER_USER_HOME"] = state
+        }
+        return result
+    }
+
     static let isolatedRPCArguments = [
         "--mode", "rpc",
         "--no-session",
@@ -176,7 +185,7 @@ actor PiRPCClient {
         process.executableURL = URL(fileURLWithPath: command.executable)
         process.arguments = command.arguments
         process.currentDirectoryURL = workingDirectory
-        var environment = ProcessInfo.processInfo.environment
+        var environment = Self.runtimeEnvironment()
         if let resolvedPath = command.environmentPath, !resolvedPath.isEmpty {
             environment["PATH"] = resolvedPath
         } else {
